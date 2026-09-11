@@ -139,6 +139,7 @@ type PoolStats struct {
 	DefaultEffort            string            `json:"default_effort"`
 	SSEPingIntervalMs        int               `json:"sse_ping_interval_ms"`
 	ModelMappings            map[string]string `json:"model_mappings"`
+	TokenUsage               TokenUsageStats   `json:"token_usage"`
 	Keys                     []KeyStatusDTO    `json:"keys"`
 }
 

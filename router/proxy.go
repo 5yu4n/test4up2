@@ -460,6 +460,7 @@ type genericSSETerminalTracker struct {
 	done         bool
 	finishReason bool
 	streamErr    error
+	usage        parsedTokenUsage
 }
 
 func (t *genericSSETerminalTracker) Feed(chunk []byte) {
@@ -494,6 +495,7 @@ func (t *genericSSETerminalTracker) consumeEvent(event []byte) {
 		}
 		var chunk openAIChunk
 		if json.Unmarshal(data, &chunk) == nil {
+			mergeTokenUsage(&t.usage, parseTokenUsageMap(chunk.Usage))
 			for _, choice := range chunk.Choices {
 				if choice.FinishReason != "" {
 					t.finishReason = true
@@ -515,6 +517,13 @@ func (t *genericSSETerminalTracker) Finish() error {
 		return errors.New("upstream stream ended before completion")
 	}
 	return nil
+}
+
+func (t *genericSSETerminalTracker) Usage() parsedTokenUsage {
+	if t == nil {
+		return parsedTokenUsage{}
+	}
+	return t.usage
 }
 
 var hopByHopHeaders = map[string]bool{
@@ -541,31 +550,35 @@ func requestFingerprint(body []byte) string {
 }
 
 type RequestLogItem struct {
-	ID             string    `json:"id"`
-	Timestamp      time.Time `json:"timestamp"`
-	Method         string    `json:"method"`
-	Path           string    `json:"path"`
-	StatusCode     int       `json:"status_code"`
-	LatencyMs      int64     `json:"latency_ms"`
-	KeyID          string    `json:"key_id"`
-	KeyName        string    `json:"key_name"`
-	Model          string    `json:"model,omitempty"`
-	Effort         string    `json:"effort,omitempty"`
-	RequestBytes   int64     `json:"request_bytes,omitempty"`
-	ReadBodyMs     int64     `json:"read_body_ms,omitempty"`
-	QueueWaitMs    int64     `json:"queue_wait_ms,omitempty"`
-	HeadersMs      int64     `json:"headers_ms,omitempty"`
-	UpstreamProto  string    `json:"upstream_proto,omitempty"`
-	Streaming      bool      `json:"streaming"`
-	ErrorMsg       string    `json:"error_msg"`
-	Fingerprint    string    `json:"request_fingerprint,omitempty"`
-	Attempts       int       `json:"attempts,omitempty"`
-	WireStatusCode int       `json:"wire_status_code,omitempty"`
-	TerminalState  string    `json:"terminal_state,omitempty"`
-	TTFTMs         int64     `json:"ttft_ms,omitempty"`
-	Chunks         int       `json:"chunks,omitempty"`
-	BytesOut       int64     `json:"bytes_out,omitempty"`
-	MaxGapMs       int64     `json:"max_gap_ms,omitempty"`
+	ID              string    `json:"id"`
+	Timestamp       time.Time `json:"timestamp"`
+	Method          string    `json:"method"`
+	Path            string    `json:"path"`
+	StatusCode      int       `json:"status_code"`
+	LatencyMs       int64     `json:"latency_ms"`
+	KeyID           string    `json:"key_id"`
+	KeyName         string    `json:"key_name"`
+	Model           string    `json:"model,omitempty"`
+	Effort          string    `json:"effort,omitempty"`
+	RequestBytes    int64     `json:"request_bytes,omitempty"`
+	ReadBodyMs      int64     `json:"read_body_ms,omitempty"`
+	QueueWaitMs     int64     `json:"queue_wait_ms,omitempty"`
+	HeadersMs       int64     `json:"headers_ms,omitempty"`
+	UpstreamProto   string    `json:"upstream_proto,omitempty"`
+	Streaming       bool      `json:"streaming"`
+	ErrorMsg        string    `json:"error_msg"`
+	Fingerprint     string    `json:"request_fingerprint,omitempty"`
+	Attempts        int       `json:"attempts,omitempty"`
+	WireStatusCode  int       `json:"wire_status_code,omitempty"`
+	TerminalState   string    `json:"terminal_state,omitempty"`
+	TTFTMs          int64     `json:"ttft_ms,omitempty"`
+	Chunks          int       `json:"chunks,omitempty"`
+	BytesOut        int64     `json:"bytes_out,omitempty"`
+	MaxGapMs        int64     `json:"max_gap_ms,omitempty"`
+	InputTokens     int64     `json:"input_tokens,omitempty"`
+	OutputTokens    int64     `json:"output_tokens,omitempty"`
+	TotalTokens     int64     `json:"total_tokens,omitempty"`
+	TokensEstimated bool      `json:"tokens_estimated,omitempty"`
 }
 
 type ProxyHandler struct {
@@ -574,6 +587,8 @@ type ProxyHandler struct {
 	logsMu  sync.RWMutex
 	logs    []RequestLogItem
 	maxLogs int
+	logSink *requestLogSink
+	usage   *tokenUsageStore
 }
 
 // Keep the total header phase bounded even when one alternate key is tried.
@@ -671,14 +686,21 @@ func NewProxyHandler(pool *Pool) *ProxyHandler {
 		ForceAttemptHTTP2:     true,
 	}
 
+	loadedLogs, logSink := initializeRequestLogs(pool, 100)
+	usagePath := ""
+	if pool != nil {
+		usagePath = pool.configPath + ".usage.json"
+	}
 	return &ProxyHandler{
 		pool: pool,
 		client: &http.Client{
 			Transport: tr,
 			Timeout:   0, // Streaming requests manage their own timeouts
 		},
-		logs:    make([]RequestLogItem, 0, 100),
+		logs:    loadedLogs,
 		maxLogs: 100,
+		logSink: logSink,
+		usage:   newTokenUsageStore(usagePath, loadedLogs),
 	}
 }
 
@@ -693,12 +715,28 @@ func (ph *ProxyHandler) GetLogs() []RequestLogItem {
 
 func (ph *ProxyHandler) addLog(item RequestLogItem) {
 	ph.logsMu.Lock()
-	defer ph.logsMu.Unlock()
-
 	if len(ph.logs) >= ph.maxLogs {
 		ph.logs = ph.logs[1:]
 	}
 	ph.logs = append(ph.logs, item)
+	ph.logsMu.Unlock()
+	if ph.logSink != nil {
+		ph.logSink.enqueue(item)
+	}
+}
+
+func (ph *ProxyHandler) recordTokenUsage(keyID string, measurement tokenUsageMeasurement) {
+	if ph == nil || ph.usage == nil {
+		return
+	}
+	ph.usage.add(keyID, measurement)
+}
+
+func (ph *ProxyHandler) GetTokenUsage() TokenUsageStats {
+	if ph == nil || ph.usage == nil {
+		return TokenUsageStats{ByKey: make(map[string]TokenUsageStats)}
+	}
+	return ph.usage.snapshot()
 }
 
 func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1324,6 +1362,12 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var streamMaxGapMs int64
 		var streamLastChunk time.Time
 		var streamErrorMsg string
+		var streamUsage parsedTokenUsage
+		var streamUpstreamBytes int64
+		var anthropicConverter *anthropicStreamConverter
+		var responseBodyBytes int64
+		var responseUsage parsedTokenUsage
+		var requestUsage tokenUsageMeasurement
 		terminalState := "complete"
 
 		if isStreamingHeader {
@@ -1366,17 +1410,18 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// TokenRouter's native endpoint is OpenAI SSE. Convert each delta
 				// into Anthropic events so Claude clients keep their original wire
 				// contract while using the faster, documented upstream path.
-				converter := newAnthropicStreamConverterWithAliases(writeChunk, requestModel, fmt.Sprintf("msg_proxy_%d", startTime.UnixNano()), toolAliases)
+				anthropicConverter = newAnthropicStreamConverterWithAliases(writeChunk, requestModel, fmt.Sprintf("msg_proxy_%d", startTime.UnixNano()), toolAliases)
 				reader := bufio.NewReaderSize(resp.Body, 16*1024)
 				for {
 					line, rErr := reader.ReadBytes('\n')
 					if len(line) > 0 {
+						streamUpstreamBytes += int64(len(line))
 						monitor.Touch()
 					}
 					trimmed := bytes.TrimSpace(line)
 					if bytes.HasPrefix(trimmed, []byte("data:")) {
 						data := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
-						if writeErr := converter.consumeData(data); writeErr != nil {
+						if writeErr := anthropicConverter.consumeData(data); writeErr != nil {
 							streamErrorMsg = writeErr.Error()
 							break
 						}
@@ -1386,7 +1431,7 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							streamErrorMsg = fmt.Sprintf("upstream response body idle for %s", upstreamBodyIdleTimeout)
 						} else if rErr != io.EOF {
 							streamErrorMsg = rErr.Error()
-						} else if !converter.done && converter.stopReason == "" {
+						} else if !anthropicConverter.done && anthropicConverter.stopReason == "" {
 							streamErrorMsg = "upstream stream ended before completion"
 						}
 						break
@@ -1395,11 +1440,12 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// `[DONE]` finishes inside consumeData. Some providers omit `[DONE]`
 				// but do send finish_reason; that is also a valid completion. Never
 				// fabricate message_stop for a truncated stream.
-				if !converter.done && converter.stopReason != "" {
-					if finishErr := converter.finish(); finishErr != nil && streamErrorMsg == "" {
+				if !anthropicConverter.done && anthropicConverter.stopReason != "" {
+					if finishErr := anthropicConverter.finish(); finishErr != nil && streamErrorMsg == "" {
 						streamErrorMsg = finishErr.Error()
 					}
 				}
+				streamUsage = anthropicConverter.usage()
 			} else if streamErrorMsg == "" {
 				// Split coalesced SSE events before writing so a provider's large
 				// network read does not make the client render a burst all at once.
@@ -1410,6 +1456,7 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				for {
 					n, rErr := resp.Body.Read(buf)
 					if n > 0 {
+						streamUpstreamBytes += int64(n)
 						monitor.Touch()
 						terminal.Feed(buf[:n])
 						if writeErr := forwardSSEChunk(writeChunk, &pendingSSE, buf[:n]); writeErr != nil {
@@ -1436,6 +1483,7 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						streamErrorMsg = terminalErr.Error()
 					}
 				}
+				mergeTokenUsage(&streamUsage, terminal.Usage())
 			}
 
 			monitor.Stop()
@@ -1487,6 +1535,8 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// an abrupt EOF or failed Anthropic conversion a real 502 instead of a
 			// truncated HTTP 200 with a stale Content-Length.
 			responseBody, readErr := readAllUpstreamBody(attemptCtx, resp.Body, upstreamBodyIdleTimeout)
+			responseBodyBytes = int64(len(responseBody))
+			responseUsage = parseTokenUsage(responseBody)
 			_ = resp.Body.Close()
 			cancelAttempt()
 			if readErr != nil {
@@ -1540,6 +1590,21 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		isSuccess := resp.StatusCode >= 200 && resp.StatusCode < 400 && streamErrorMsg == ""
+		if isSuccess && isTokenUsagePath(r.URL.Path) {
+			if isStreamingHeader {
+				// Estimate a missing provider output count from the upstream wire
+				// stream. The client-facing Anthropic bridge adds event framing, so
+				// using streamBytesOut there would systematically over-count.
+				outputBytes := streamUpstreamBytes
+				if outputBytes <= 0 {
+					outputBytes = streamBytesOut
+				}
+				requestUsage = measurementFromPayload(outboundJSONBytes, outputBytes, streamUsage)
+			} else {
+				requestUsage = measurementFromPayload(outboundJSONBytes, responseBodyBytes, responseUsage)
+			}
+			ph.recordTokenUsage(logKeyID, requestUsage)
+		}
 		if !useFreebuff && isStreamingHeader && isSuccess {
 			// Header latency alone misses the expensive provider-side thinking
 			// phase. Train the picker on time to the first emitted token so a key
@@ -1562,31 +1627,35 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		ph.addLog(RequestLogItem{
-			ID:             fmt.Sprintf("req-%d", time.Now().UnixNano()),
-			Timestamp:      startTime,
-			Method:         r.Method,
-			Path:           r.URL.Path,
-			StatusCode:     logStatusCode,
-			LatencyMs:      latency,
-			KeyID:          logKeyID,
-			KeyName:        logKeyName,
-			Model:          requestModel,
-			Effort:         requestEffort,
-			RequestBytes:   int64(len(bodyBytes)),
-			ReadBodyMs:     readBodyMs,
-			QueueWaitMs:    queueWaitMs,
-			HeadersMs:      headersMs,
-			UpstreamProto:  upstreamProto,
-			Streaming:      isStreamingHeader,
-			TTFTMs:         streamTTFTMs,
-			Chunks:         streamChunks,
-			BytesOut:       streamBytesOut,
-			MaxGapMs:       streamMaxGapMs,
-			ErrorMsg:       streamErrorMsg,
-			Fingerprint:    requestFingerprintValue,
-			Attempts:       attemptsUsed,
-			WireStatusCode: wireStatusCode,
-			TerminalState:  terminalState,
+			ID:              fmt.Sprintf("req-%d", time.Now().UnixNano()),
+			Timestamp:       startTime,
+			Method:          r.Method,
+			Path:            r.URL.Path,
+			StatusCode:      logStatusCode,
+			LatencyMs:       latency,
+			KeyID:           logKeyID,
+			KeyName:         logKeyName,
+			Model:           requestModel,
+			Effort:          requestEffort,
+			RequestBytes:    int64(len(bodyBytes)),
+			ReadBodyMs:      readBodyMs,
+			QueueWaitMs:     queueWaitMs,
+			HeadersMs:       headersMs,
+			UpstreamProto:   upstreamProto,
+			Streaming:       isStreamingHeader,
+			TTFTMs:          streamTTFTMs,
+			Chunks:          streamChunks,
+			BytesOut:        streamBytesOut,
+			MaxGapMs:        streamMaxGapMs,
+			InputTokens:     requestUsage.InputTokens,
+			OutputTokens:    requestUsage.OutputTokens,
+			TotalTokens:     requestUsage.InputTokens + requestUsage.OutputTokens,
+			TokensEstimated: requestUsage.Estimated,
+			ErrorMsg:        streamErrorMsg,
+			Fingerprint:     requestFingerprintValue,
+			Attempts:        attemptsUsed,
+			WireStatusCode:  wireStatusCode,
+			TerminalState:   terminalState,
 		})
 
 		return

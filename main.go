@@ -67,6 +67,7 @@ func main() {
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		stats := pool.GetStats()
+		stats.TokenUsage = proxyHandler.GetTokenUsage()
 		_ = json.NewEncoder(w).Encode(stats)
 	})
 
@@ -148,7 +149,6 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"ok","default_effort":%q}`, effort)))
 	})
-
 
 	mux.HandleFunc("/api/config/model-mapping", func(w http.ResponseWriter, r *http.Request) {
 		alias := r.URL.Query().Get("alias")

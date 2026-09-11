@@ -562,6 +562,11 @@ type anthropicStreamConverter struct {
 	liveToolIndex int
 	// toolCalls buffers each parallel tool call by its OpenAI index.
 	toolCalls map[int]*toolCallBuffer
+	// tokenUsage captures provider usage fields that may arrive in the final
+	// OpenAI SSE chunk. TokenRouter's Anthropic response events historically
+	// exposed zeroes, so keep the exact values for accounting even when the
+	// client-facing compatibility event cannot be changed.
+	tokenUsage parsedTokenUsage
 }
 
 func newAnthropicStreamConverter(emit func([]byte) error, model, messageID string) *anthropicStreamConverter {
@@ -639,6 +644,7 @@ func (c *anthropicStreamConverter) consumeData(data []byte) error {
 	if chunk.Model != "" {
 		c.model = chunk.Model
 	}
+	mergeTokenUsage(&c.tokenUsage, parseTokenUsageMap(chunk.Usage))
 	if len(chunk.Choices) == 0 {
 		return nil
 	}
@@ -801,6 +807,13 @@ func (c *anthropicStreamConverter) finish() error {
 		return err
 	}
 	return c.event("message_stop", map[string]interface{}{"type": "message_stop"})
+}
+
+func (c *anthropicStreamConverter) usage() parsedTokenUsage {
+	if c == nil {
+		return parsedTokenUsage{}
+	}
+	return c.tokenUsage
 }
 
 func openAIJSONToAnthropic(body []byte, model string) ([]byte, error) {

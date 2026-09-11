@@ -241,6 +241,69 @@
       margin-top: 4px;
     }
 
+    .token-usage-card {
+      grid-column: 1 / -1;
+      padding: 18px 20px;
+    }
+
+    .token-usage-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .token-usage-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    .token-usage-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      text-align: right;
+    }
+
+    .token-usage-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 12px;
+    }
+
+    .token-usage-metric {
+      min-width: 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.035);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .token-usage-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 3px;
+    }
+
+    .token-usage-value {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.4px;
+      font-family: var(--font-mono);
+      color: var(--accent-cyan);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    @media (max-width: 720px) {
+      .token-usage-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .token-usage-header { align-items: flex-start; flex-direction: column; }
+      .token-usage-meta { text-align: left; }
+    }
+
     .route-breakdown {
       display: flex;
       flex-wrap: wrap;
@@ -642,6 +705,31 @@
         <div class="stat-value" id="stat-total-requests">0</div>
         <div class="stat-sub">自啟動以來的累積調用</div>
       </div>
+
+      <div class="stat-card token-usage-card">
+        <div class="token-usage-header">
+          <div class="token-usage-title">🧮 Token 用量（即時累計）</div>
+          <div class="token-usage-meta" id="stat-token-meta">讀取中…</div>
+        </div>
+        <div class="token-usage-grid">
+          <div class="token-usage-metric">
+            <div class="token-usage-label">輸入 Tokens</div>
+            <div class="token-usage-value" id="stat-token-input">0</div>
+          </div>
+          <div class="token-usage-metric">
+            <div class="token-usage-label">輸出 Tokens</div>
+            <div class="token-usage-value" id="stat-token-output">0</div>
+          </div>
+          <div class="token-usage-metric">
+            <div class="token-usage-label">合計 Tokens</div>
+            <div class="token-usage-value" id="stat-token-total">0</div>
+          </div>
+          <div class="token-usage-metric">
+            <div class="token-usage-label">已統計請求</div>
+            <div class="token-usage-value" id="stat-token-requests">0</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Key Management Grid -->
@@ -726,6 +814,17 @@
       return Number.isFinite(value) ? value : fallback;
     }
 
+    function formatCount(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? Math.max(0, Math.round(number)).toLocaleString('zh-TW') : '0';
+    }
+
+    function formatUsageTime(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString();
+    }
+
     function renderDashboard(data) {
       document.getElementById('server-port').textContent = data.port || 8080;
       document.getElementById('upstream-input').value = data.upstream_url || '';
@@ -772,6 +871,17 @@
       const backoffSuffix = data.concurrency_backoff_remaining_sec > 0 ? ` · 自適應併發恢復 ${data.concurrency_backoff_remaining_sec}s` : '';
       document.getElementById('stat-concurrency-detail').textContent = `排隊 ${queuedRequests}${queueReason} · 設定上限 ${configuredConcurrent} · 本頁峰值 ${observedPeakActive}（忙碌線路 ${observedPeakBusy}）${backoffSuffix}`;
       document.getElementById('stat-total-requests').textContent = data.total_requests;
+
+      const usage = data.token_usage || {};
+      document.getElementById('stat-token-input').textContent = formatCount(usage.input_tokens);
+      document.getElementById('stat-token-output').textContent = formatCount(usage.output_tokens);
+      document.getElementById('stat-token-total').textContent = formatCount(usage.total_tokens);
+      document.getElementById('stat-token-requests').textContent = formatCount(usage.requests);
+      const exactRequests = formatCount(usage.exact_requests);
+      const estimatedRequests = formatCount(usage.estimated_requests);
+      const updatedAt = formatUsageTime(usage.last_updated);
+      const updatedSuffix = updatedAt ? ` · 更新 ${updatedAt}` : '';
+      document.getElementById('stat-token-meta').textContent = `精確 ${exactRequests} · 估算 ${estimatedRequests}${updatedSuffix}`;
 
       document.getElementById('strip-thinking-toggle').checked = !!data.strip_thinking;
       document.getElementById('fast-thinking-toggle').checked = !!data.fast_stream_thinking_as_text;
@@ -888,6 +998,10 @@
         diagnosticLines.push(`排隊 ${Number(log.queue_wait_ms) || 0}ms · 上游首回應 ${Number(log.headers_ms) || 0}ms`);
         if (log.request_bytes || log.chunks || log.bytes_out) {
           diagnosticLines.push(`請求 ${formatBytes(log.request_bytes)} · ${Number(log.chunks) || 0} chunks / ${formatBytes(log.bytes_out)}`);
+        }
+        if (log.total_tokens || log.input_tokens || log.output_tokens) {
+          const estimateSuffix = log.tokens_estimated ? '（估算）' : '（精確）';
+          diagnosticLines.push(`Tokens ${formatCount(log.total_tokens)} · in ${formatCount(log.input_tokens)} / out ${formatCount(log.output_tokens)} ${estimateSuffix}`);
         }
         if (log.request_fingerprint) {
           diagnosticLines.push(`#${escapeHtml(log.request_fingerprint)} · ${Number(log.attempts) || 0} 次上游嘗試`);
