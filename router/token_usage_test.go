@@ -2,8 +2,12 @@ package router
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,5 +74,32 @@ func TestTokenUsageStoreMigratesHistoryAndPersistsNewMeasurements(t *testing.T) 
 	}
 	if persisted.Stats.TotalTokens != 160 {
 		t.Fatalf("persisted total = %d, want 160", persisted.Stats.TotalTokens)
+	}
+}
+
+func TestProxyRecordsExactUsageFromStandardResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":5,"total_tokens":16}}`)
+	}))
+	defer upstream.Close()
+
+	ph := NewProxyHandler(testPool(t, upstream.URL, "", false))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.3-free","messages":[]}`))
+	rec := httptest.NewRecorder()
+	ph.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	usage := ph.GetTokenUsage()
+	if usage.Requests != 1 || usage.ExactRequests != 1 || usage.EstimatedRequests != 0 {
+		t.Fatalf("usage counters = %#v, want one exact request", usage)
+	}
+	if usage.InputTokens != 11 || usage.OutputTokens != 5 || usage.TotalTokens != 16 {
+		t.Fatalf("usage tokens = %#v, want 11/5/16", usage)
+	}
+	logs := ph.GetLogs()
+	if len(logs) == 0 || logs[len(logs)-1].InputTokens != 11 || logs[len(logs)-1].OutputTokens != 5 || logs[len(logs)-1].TokensEstimated {
+		t.Fatalf("request log usage = %#v, want exact 11/5", logs)
 	}
 }
