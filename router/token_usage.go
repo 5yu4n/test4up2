@@ -222,6 +222,26 @@ func measurementFromRequestLog(item RequestLogItem) tokenUsageMeasurement {
 	return tokenUsageMeasurement{InputTokens: input, OutputTokens: output, Estimated: estimated}
 }
 
+func backfillRequestLogUsage(logs []RequestLogItem) {
+	for index := range logs {
+		item := &logs[index]
+		if item.StatusCode < 200 || item.StatusCode >= 300 || !isTokenUsagePath(item.Path) {
+			continue
+		}
+		// Keep provider-reported values untouched. Only legacy records that did
+		// not carry token fields receive the byte-based estimate used by the
+		// aggregate migration.
+		if item.InputTokens > 0 || item.OutputTokens > 0 || item.TokensEstimated {
+			continue
+		}
+		measurement := measurementFromRequestLog(*item)
+		item.InputTokens = measurement.InputTokens
+		item.OutputTokens = measurement.OutputTokens
+		item.TotalTokens = measurement.InputTokens + measurement.OutputTokens
+		item.TokensEstimated = measurement.Estimated
+	}
+}
+
 func measurementFromPayload(inputBody []byte, outputBytes int64, usage parsedTokenUsage) tokenUsageMeasurement {
 	input := usage.InputTokens
 	output := usage.OutputTokens

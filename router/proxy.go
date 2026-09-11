@@ -691,6 +691,7 @@ func NewProxyHandler(pool *Pool) *ProxyHandler {
 	if pool != nil {
 		usagePath = pool.configPath + ".usage.json"
 	}
+	backfillRequestLogUsage(loadedLogs)
 	return &ProxyHandler{
 		pool: pool,
 		client: &http.Client{

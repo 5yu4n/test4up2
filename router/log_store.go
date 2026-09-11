@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 const (
@@ -15,12 +16,15 @@ const (
 	requestLogKeepRecords = 2000
 )
 
-// requestLogSink keeps the request hot path independent from filesystem
-// latency. The channel is deliberately much larger than the configured RPM
-// ceiling, so a short antivirus or disk stall cannot delay a user response.
+// requestLogSink serializes diagnostic writes. Request logs are written after
+// the response body has been handed to net/http, and keeping the write here
+// makes the latest record durable before a restart or a short-lived test
+// process exits; no background writer can recreate a deleted deployment
+// directory after shutdown.
 type requestLogSink struct {
-	path string
-	ch   chan RequestLogItem
+	mu               sync.Mutex
+	path             string
+	writesSinceCheck int
 }
 
 func newRequestLogSink(path string) *requestLogSink {
@@ -29,9 +33,7 @@ func newRequestLogSink(path string) *requestLogSink {
 	}
 	s := &requestLogSink{
 		path: path,
-		ch:   make(chan RequestLogItem, 4096),
 	}
-	go s.run()
 	return s
 }
 
@@ -53,21 +55,12 @@ func (s *requestLogSink) enqueue(item RequestLogItem) {
 	if s == nil {
 		return
 	}
-	// At the configured request rates this buffer represents many minutes of
-	// history. Blocking only when it is truly full preserves diagnostics rather
-	// than silently losing the exact failure that needs investigation.
-	s.ch <- item
-}
-
-func (s *requestLogSink) run() {
-	writesSinceCheck := 0
-	for item := range s.ch {
-		_ = appendRequestLog(s.path, item)
-		writesSinceCheck++
-		if writesSinceCheck < 100 {
-			continue
-		}
-		writesSinceCheck = 0
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = appendRequestLog(s.path, item)
+	s.writesSinceCheck++
+	if s.writesSinceCheck >= 100 {
+		s.writesSinceCheck = 0
 		if info, err := os.Stat(s.path); err == nil && info.Size() > requestLogRotateBytes {
 			_ = compactRequestLogs(s.path, requestLogKeepRecords)
 		}
