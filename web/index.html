@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TokenRouter - 本地極致平滑負載均衡器</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0d14;
+      --bg-card: rgba(18, 24, 38, 0.75);
+      --bg-card-hover: rgba(26, 35, 56, 0.85);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-glow: rgba(56, 189, 248, 0.3);
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-cyan: #38bdf8;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --accent-indigo: #6366f1;
+      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.08) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(99, 102, 241, 0.08) 0px, transparent 50%);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      min-height: 100vh;
+      padding: 24px;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1320px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 28px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-icon {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-indigo));
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 20px;
+      box-shadow: 0 0 20px rgba(56, 189, 248, 0.4);
+    }
+
+    .brand-text h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      background: linear-gradient(to right, #ffffff, var(--accent-cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .brand-text p {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .endpoint-badge {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--accent-cyan);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 10px var(--accent-emerald);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.9); }
+    }
+
+    /* Upstream Config Bar */
+    .config-card {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 18px 24px;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .config-input-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+    }
+
+    .config-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    .config-input {
+      flex: 1;
+      background: rgba(10, 13, 20, 0.6);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 14px;
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+
+    .config-input:focus {
+      outline: none;
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+    }
+
+    .btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-weight: 500;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-indigo));
+      border: none;
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 4px 14px rgba(56, 189, 248, 0.3);
+    }
+
+    .btn-primary:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+
+    /* Stats Grid */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 18px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stat-title {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      font-family: var(--font-mono);
+    }
+
+    .stat-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .route-breakdown {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      margin-top: 9px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .route-breakdown span {
+      white-space: nowrap;
+    }
+
+    .route-eligible { color: var(--accent-emerald); }
+    .route-busy { color: var(--accent-cyan); }
+    .route-cooldown { color: var(--accent-amber); }
+    .route-exhausted { color: var(--accent-rose); }
+
+    .progress-bar-bg {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 12px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(to right, var(--accent-cyan), var(--accent-indigo));
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+
+    /* Section Title */
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Keys Grid */
+    .keys-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 18px;
+      margin-bottom: 32px;
+    }
+
+    .key-card {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 20px;
+      transition: all 0.2s;
+    }
+
+    .key-card:hover {
+      border-color: var(--border-glow);
+      background: var(--bg-card-hover);
+    }
+
+    .key-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 12px;
+    }
+
+    .key-name {
+      font-weight: 600;
+      font-size: 15px;
+    }
+
+    .key-masked {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 20px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .badge-active {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-emerald);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .badge-cooldown {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--accent-amber);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .badge-disabled {
+      background: rgba(244, 63, 94, 0.15);
+      color: var(--accent-rose);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+    }
+
+    .key-metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin: 14px 0;
+      background: rgba(10, 13, 20, 0.4);
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .key-metric-item {
+      font-size: 12px;
+    }
+
+    .key-metric-label {
+      color: var(--text-muted);
+    }
+
+    .key-metric-val {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .key-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    /* Switch */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 38px;
+      height: 20px;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: rgba(255, 255, 255, 0.1);
+      transition: .3s;
+      border-radius: 20px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 14px;
+      width: 14px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .3s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: var(--accent-cyan);
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(18px);
+    }
+
+    /* Request Logs Table */
+    .table-container {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+    }
+
+    th {
+      background: rgba(10, 13, 20, 0.7);
+      padding: 12px 18px;
+      color: var(--text-secondary);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    td {
+      padding: 12px 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text-primary);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .status-badge {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .status-2xx { background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald); }
+    .status-4xx { background: rgba(245, 158, 11, 0.2); color: var(--accent-amber); }
+    .status-5xx { background: rgba(244, 63, 94, 0.2); color: var(--accent-rose); }
+
+    /* Tester Drawer */
+    .tester-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 20px;
+      margin-top: 28px;
+    }
+
+    .tester-controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .tester-response {
+      background: rgba(10, 13, 20, 0.8);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--accent-cyan);
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <div class="brand-icon">TR</div>
+        <div class="brand-text">
+          <h1>TokenRouter</h1>
+          <p>極致順暢 Golang 本地 API 配平器 & 滑動窗口限流</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="endpoint-badge">
+          <div class="status-dot"></div>
+          <span>http://localhost:<span id="server-port">8080</span>/v1</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Upstream Config -->
+    <div class="config-card">
+      <div class="config-input-group">
+        <span class="config-label">上游 API 網址 (Upstream Base URL):</span>
+        <input type="text" id="upstream-input" class="config-input" placeholder="https://api.tokenrouter.com/v1">
+      </div>
+      <button class="btn btn-primary" onclick="saveUpstreamUrl()">儲存網址</button>
+    </div>
+
+    <div class="config-card" style="background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.3);">
+      <div style="flex:1;">
+        <div style="font-weight:700; font-size:15px; color:var(--accent-emerald); margin-bottom:6px;">🟢 Freebuff2API · GLM 5.3 Flash 分流</div>
+        <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px;">啟用後，模型名稱含 <code>glm-5.3-flash</code> 的請求會直接送到本機 Freebuff2API；其他模型照常走上游。Freebuff 使用獨立通道，不佔 TokenRouter Key 與併發槽。</div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:13px; color:var(--text-primary); font-weight:500;">Freebuff 本機網址:</span>
+          <input type="text" id="freebuff-url-input" class="config-input" style="max-width:420px;" placeholder="http://127.0.0.1:8090/v1">
+          <button class="btn" onclick="saveFreebuffUrl()">儲存</button>
+          <span style="font-size:13px; color:var(--text-primary); font-weight:500;">啟用分流</span>
+          <label class="switch">
+            <input type="checkbox" id="freebuff-toggle" onchange="toggleFreebuff(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- ccswitch & Claude Optimization Card -->
+    <div class="config-card" style="background: rgba(99, 102, 241, 0.08); border-color: rgba(99, 102, 241, 0.3);">
+      <div style="flex:1;">
+        <div style="font-weight: 700; font-size: 15px; color: var(--accent-cyan); margin-bottom: 6px; display:flex; align-items:center; gap:8px;">
+            <span>⚡ ccswitch & Claude 透明串流與別名映射面板</span>
+        </div>
+        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+            代理不改寫 thinking 或 effort，交由 Claude 與上游自行管理；原始 thinking SSE 事件會照協定轉送。
+        </div>
+
+        <div style="display:flex; gap:24px; align-items:center; flex-wrap:wrap;">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:13px; color:var(--accent-cyan); font-weight:600;">Thinking / Effort 由 Claude 與上游管理</span>
+            <label class="switch">
+              <input type="checkbox" id="fast-thinking-toggle" disabled title="已停用代理層 thinking 改寫">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:13px; color:var(--text-primary); font-weight:500;">Effort（由請求端決定）:</span>
+            <select id="effort-select" disabled title="代理不再注入或改寫 effort" onchange="changeEffort(this.value)" style="background:rgba(255,255,255,0.08); border:1px solid var(--border-color); color:var(--text-primary); padding:4px 8px; border-radius:6px; font-size:12px; outline:none; cursor:not-allowed;">
+              <option value="high" selected>High (滿血深度思考 - UltraCode 推薦)</option>
+              <option value="low">Low (極速精簡思考)</option>
+              <option value="max">Max (極限深層推理)</option>
+            </select>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:13px; color:var(--text-secondary); font-weight:500;">代理層過濾 Thinking（已停用）:</span>
+            <label class="switch">
+              <input type="checkbox" id="strip-thinking-toggle" disabled title="已停用代理層 thinking 過濾">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--accent-emerald); background:rgba(16,185,129,0.1); padding:4px 10px; border-radius:6px; border:1px solid rgba(16,185,129,0.2);">
+            <div class="status-dot" style="width:6px; height:6px;"></div>
+            <span>SSE 心跳保持連線中</span>
+          </div>
+        </div>
+
+        <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06);">
+          <div style="font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px;">模型名稱別名自動映射 (Model Aliases):</div>
+          <div id="model-mappings-list" style="display:flex; gap:8px; flex-wrap:wrap;">
+            <!-- Rendered by JS -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats Grid -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-title">RPM 啟動配額（60 秒滑動窗口）</div>
+        <div class="stat-value"><span id="stat-curr-rpm">0</span> / <span id="stat-max-rpm">0</span></div>
+        <div class="stat-sub">計算最近 60 秒啟動次數；與同時執行的 7 條線路是不同限制</div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="rpm-progress" style="width: 0%"></div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-title">目前可接單線路（Eligible Keys）</div>
+        <div class="stat-value"><span id="stat-eligible-keys">0</span> / <span id="stat-enabled-keys">0</span></div>
+        <div class="route-breakdown" aria-label="線路即時分類">
+          <span class="route-busy">忙碌 <strong id="stat-busy-keys">0</strong></span>
+          <span class="route-cooldown">冷卻 <strong id="stat-cooldown-keys">0</strong></span>
+          <span class="route-exhausted">RPM 已滿 <strong id="stat-rpm-exhausted-keys">0</strong></span>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-title">同時執行（Concurrency）</div>
+        <div class="stat-value"><span id="stat-active-requests">0</span> / <span id="stat-effective-concurrency">0</span></div>
+        <div class="stat-sub" id="stat-concurrency-detail">排隊 0 · 設定上限 0</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-title">總轉發請求數 (Total Requests)</div>
+        <div class="stat-value" id="stat-total-requests">0</div>
+        <div class="stat-sub">自啟動以來的累積調用</div>
+      </div>
+    </div>
+
+    <!-- Key Management Grid -->
+    <div class="section-header">
+      <div class="section-title">
+        <span>🔑 API 金鑰狀態與限流分配（每組獨立窗口）</span>
+      </div>
+    </div>
+
+    <div class="keys-grid" id="keys-container">
+      <!-- Dynamic Key Cards populated by JS -->
+    </div>
+
+    <!-- Live Logs -->
+    <div class="section-header">
+      <div class="section-title">
+        <span>⚡ 即時請求處理日誌 (Live Activity Log)</span>
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>時間</th>
+            <th>請求路徑</th>
+            <th>狀態碼</th>
+            <th>響應時間</th>
+            <th>分流使用金鑰</th>
+            <th>類型</th>
+            <th>串流節奏</th>
+            <th>診斷</th>
+          </tr>
+        </thead>
+        <tbody id="logs-tbody">
+          <tr>
+            <td colspan="8" style="text-align:center; color:var(--text-muted);">尚無請求記錄</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Interactive Tester -->
+    <div class="tester-card">
+      <div class="section-title" style="margin-bottom: 12px;">
+        <span>🧪 配平器極致順暢測試工具 (Test Endpoint)</span>
+      </div>
+      <div class="tester-controls">
+        <button class="btn btn-primary" onclick="sendSingleTestRequest()">發送 1 次測試請求</button>
+        <button class="btn" onclick="sendBurstTestRequests(7)">發送 7 次輕量併發檢查</button>
+      </div>
+      <div class="tester-response" id="tester-output">// /v1/models 只檢查基本轉發；請以長串流負載驗收 7 路滿載。</div>
+    </div>
+  </div>
+
+  <script>
+    async function fetchStats() {
+      try {
+        const res = await fetch('/api/stats');
+        const data = await res.json();
+        renderDashboard(data);
+      } catch (err) {
+        console.error('Failed to fetch stats:', err);
+      }
+    }
+
+    async function fetchLogs() {
+      try {
+        const res = await fetch('/api/logs');
+        const logs = await res.json();
+        renderLogs(logs);
+      } catch (err) {
+        console.error('Failed to fetch logs:', err);
+      }
+    }
+
+    let observedPeakActive = 0;
+    let observedPeakBusy = 0;
+
+    function numericStat(data, field, fallback) {
+      const value = Number(data[field]);
+      return Number.isFinite(value) ? value : fallback;
+    }
+
+    function renderDashboard(data) {
+      document.getElementById('server-port').textContent = data.port || 8080;
+      document.getElementById('upstream-input').value = data.upstream_url || '';
+      document.getElementById('freebuff-url-input').value = data.freebuff_base_url || 'http://127.0.0.1:8090/v1';
+      document.getElementById('freebuff-toggle').checked = !!data.freebuff_enabled;
+      document.getElementById('stat-curr-rpm').textContent = data.aggregate_curr_rpm;
+      document.getElementById('stat-max-rpm').textContent = data.aggregate_max_rpm;
+
+      const keys = Array.isArray(data.keys) ? data.keys : [];
+      const enabledFallback = keys.filter(k => k.enabled).length;
+      const cooldownFallback = keys.filter(k => k.enabled && k.in_cooldown).length;
+      const exhaustedFallback = keys.filter(k => k.enabled && (Number(k.rpm_limit) <= 0 || Number(k.rpm_current) >= Number(k.rpm_limit))).length;
+      const eligibleFallback = keys.filter(k => k.enabled && !k.in_cooldown && Number(k.rpm_limit) > 0 && Number(k.rpm_current) < Number(k.rpm_limit)).length;
+      const busyFallback = keys.filter(k => Number(k.in_flight_requests) > 0).length;
+      const enabledKeys = numericStat(data, 'active_keys', enabledFallback);
+      const eligibleKeys = numericStat(data, 'eligible_keys', eligibleFallback);
+      const busyKeys = numericStat(data, 'busy_keys', busyFallback);
+      const cooldownKeys = numericStat(data, 'cooldown_keys', cooldownFallback);
+      const rpmExhaustedKeys = numericStat(data, 'rpm_exhausted_keys', exhaustedFallback);
+
+      document.getElementById('stat-enabled-keys').textContent = enabledKeys;
+      document.getElementById('stat-eligible-keys').textContent = eligibleKeys;
+      document.getElementById('stat-busy-keys').textContent = busyKeys;
+      document.getElementById('stat-cooldown-keys').textContent = cooldownKeys;
+      document.getElementById('stat-rpm-exhausted-keys').textContent = rpmExhaustedKeys;
+
+      const configuredConcurrent = data.max_concurrent_requests > 0 ? data.max_concurrent_requests : '無上限';
+      const effectiveConcurrent = data.effective_max_concurrent_requests > 0 ? data.effective_max_concurrent_requests : configuredConcurrent;
+      const activeRequests = Number(data.active_requests) || 0;
+      const queuedRequests = Number(data.queued_requests) || 0;
+      observedPeakActive = Math.max(observedPeakActive, activeRequests);
+      observedPeakBusy = Math.max(observedPeakBusy, busyKeys);
+      document.getElementById('stat-active-requests').textContent = activeRequests;
+      document.getElementById('stat-effective-concurrency').textContent = effectiveConcurrent;
+      const queueReasonLabels = {
+        concurrency_saturated: '7 條執行線路已滿',
+        cooldown: '可用 Key 皆在冷卻',
+        rpm_exhausted: '每 Key 的 60 秒 RPM 已滿',
+        waiting_for_dispatch: '等待派送喚醒'
+      };
+      const queueReason = queuedRequests > 0 && data.queue_block_reason
+        ? ` · 原因：${queueReasonLabels[data.queue_block_reason] || data.queue_block_reason}`
+        : '';
+      const backoffSuffix = data.concurrency_backoff_remaining_sec > 0 ? ` · 自適應併發恢復 ${data.concurrency_backoff_remaining_sec}s` : '';
+      document.getElementById('stat-concurrency-detail').textContent = `排隊 ${queuedRequests}${queueReason} · 設定上限 ${configuredConcurrent} · 本頁峰值 ${observedPeakActive}（忙碌線路 ${observedPeakBusy}）${backoffSuffix}`;
+      document.getElementById('stat-total-requests').textContent = data.total_requests;
+
+      document.getElementById('strip-thinking-toggle').checked = !!data.strip_thinking;
+      document.getElementById('fast-thinking-toggle').checked = !!data.fast_stream_thinking_as_text;
+      if (data.default_effort) document.getElementById('effort-select').value = data.default_effort;
+
+      const mappingContainer = document.getElementById('model-mappings-list');
+      mappingContainer.innerHTML = '';
+      if (data.model_mappings) {
+        Object.entries(data.model_mappings).forEach(([alias, target]) => {
+          const pill = document.createElement('div');
+          pill.style.cssText = 'background:rgba(255,255,255,0.06); border:1px solid var(--border-color); padding:3px 8px; border-radius:6px; font-family:var(--font-mono); font-size:11px; display:flex; align-items:center; gap:6px;';
+          pill.innerHTML = `<span style="color:var(--accent-cyan);">${escapeHtml(alias)}</span> <span style="color:var(--text-muted);">&rarr;</span> <span style="color:var(--accent-emerald);">${escapeHtml(target)}</span>`;
+          mappingContainer.appendChild(pill);
+        });
+      }
+
+      const pct = data.aggregate_max_rpm > 0 ? (data.aggregate_curr_rpm / data.aggregate_max_rpm) * 100 : 0;
+      document.getElementById('rpm-progress').style.width = `${Math.min(100, pct)}%`;
+
+      const keysContainer = document.getElementById('keys-container');
+      keysContainer.innerHTML = '';
+
+      data.keys.forEach(k => {
+        const card = document.createElement('div');
+        card.className = 'key-card';
+
+        let badgeClass = 'badge-active';
+        let badgeText = '正常運行';
+
+        if (!k.enabled) {
+          badgeClass = 'badge-disabled';
+          badgeText = '已停用';
+        } else if (k.in_cooldown) {
+          badgeClass = 'badge-cooldown';
+          badgeText = `冷卻中 (${k.cooldown_remaining_sec}s)`;
+        } else if (k.rpm_exhausted || Number(k.rpm_limit) <= 0 || Number(k.rpm_current) >= Number(k.rpm_limit)) {
+          badgeClass = 'badge-cooldown';
+          badgeText = `滿載 (${k.next_window_sec}s解鎖)`;
+        } else if (Number(k.in_flight_requests) > 0) {
+          badgeText = `執行中 (${k.in_flight_requests})`;
+        } else {
+          badgeText = '可接單';
+        }
+
+        const usagePct = (k.rpm_current / k.rpm_limit) * 100;
+        const latencyEma = k.latency_ema_ms > 0 ? `${k.latency_ema_ms}ms` : '—';
+        const gapEma = k.gap_ema_ms > 0 ? `${k.gap_ema_ms}ms` : '—';
+
+        card.innerHTML = `
+          <div class="key-card-header">
+            <div>
+              <div class="key-name">${escapeHtml(k.name)}</div>
+              <div class="key-masked">${escapeHtml(k.key_masked)}</div>
+            </div>
+            <span class="badge ${badgeClass}">${badgeText}</span>
+          </div>
+
+          <div style="font-size:12px; color:var(--text-secondary); margin-bottom:4px; display:flex; justify-content:space-between;">
+            <span>60s 窗口容量:</span>
+            <span style="font-family:var(--font-mono); font-weight:600;">${k.rpm_current} / ${k.rpm_limit} RPM</span>
+          </div>
+          <div class="progress-bar-bg" style="margin-top:0;">
+            <div class="progress-bar-fill" style="width: ${Math.min(100, usagePct)}%; ${usagePct >= 100 ? 'background: var(--accent-amber);' : ''}"></div>
+          </div>
+
+          <div class="key-metrics">
+            <div class="key-metric-item">
+              <div class="key-metric-label">進行中請求</div>
+              <div class="key-metric-val">${k.in_flight_requests}</div>
+            </div>
+            <div class="key-metric-item">
+              <div class="key-metric-label">總完成請求</div>
+              <div class="key-metric-val">${k.total_requests}</div>
+            </div>
+            <div class="key-metric-item">
+              <div class="key-metric-label">首字 EMA</div>
+              <div class="key-metric-val">${latencyEma}</div>
+            </div>
+            <div class="key-metric-item">
+              <div class="key-metric-label">間隔 EMA</div>
+              <div class="key-metric-val">${gapEma}</div>
+            </div>
+          </div>
+
+          <div class="key-actions">
+            <span style="font-size:12px; color:var(--text-secondary);">啟用金鑰</span>
+            <label class="switch">
+              <input type="checkbox" ${k.enabled ? 'checked' : ''} onchange="toggleKey('${k.id}', this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+        `;
+        keysContainer.appendChild(card);
+      });
+    }
+
+    function renderLogs(logs) {
+      const tbody = document.getElementById('logs-tbody');
+      if (!logs || logs.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--text-muted);">尚無請求記錄</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = '';
+      logs.slice().reverse().forEach(log => {
+        const tr = document.createElement('tr');
+        const dateStr = new Date(log.timestamp).toLocaleTimeString();
+        let statusClass = 'status-2xx';
+        if (log.status_code >= 400 && log.status_code < 500) statusClass = 'status-4xx';
+        if (log.status_code >= 500) statusClass = 'status-5xx';
+
+        const diagnosticLines = [];
+        if (log.error_msg) diagnosticLines.push(`<span style="color:var(--accent-rose)">${escapeHtml(log.error_msg)}</span>`);
+        diagnosticLines.push(`排隊 ${Number(log.queue_wait_ms) || 0}ms · 上游首回應 ${Number(log.headers_ms) || 0}ms`);
+        if (log.request_bytes || log.chunks || log.bytes_out) {
+          diagnosticLines.push(`請求 ${formatBytes(log.request_bytes)} · ${Number(log.chunks) || 0} chunks / ${formatBytes(log.bytes_out)}`);
+        }
+        if (log.request_fingerprint) {
+          diagnosticLines.push(`#${escapeHtml(log.request_fingerprint)} · ${Number(log.attempts) || 0} 次上游嘗試`);
+        }
+
+        tr.innerHTML = `
+          <td style="font-family:var(--font-mono); color:var(--text-muted);">${dateStr}</td>
+          <td style="font-family:var(--font-mono);">${escapeHtml(log.method)} ${escapeHtml(log.path)}</td>
+          <td><span class="status-badge ${statusClass}">${log.status_code}</span></td>
+          <td style="font-family:var(--font-mono);">${log.latency_ms} ms</td>
+          <td><span style="color:var(--accent-cyan); font-weight:500;">${escapeHtml(log.key_name || '無')}</span></td>
+          <td><span style="font-size:11px; padding:2px 6px; border-radius:4px; background:rgba(255,255,255,0.06);">${log.streaming ? 'SSE 流式' : '標準'}</span></td>
+          <td style="font-family:var(--font-mono); font-size:11px; color:var(--text-secondary);">${log.streaming ? `${log.ttft_ms ?? 0}ms 首字<br>${log.max_gap_ms ?? 0}ms 最大間隔` : '—'}</td>
+          <td style="font-family:var(--font-mono); font-size:10px; color:var(--text-muted); max-width:300px;">${diagnosticLines.join('<br>')}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function toggleKey(keyId, enabled) {
+      await fetch(`/api/keys/toggle?id=${keyId}&enabled=${enabled}`, { method: 'POST' });
+      fetchStats();
+    }
+
+    async function toggleStripThinking(enabled) {
+      await fetch(`/api/config/strip-thinking?enabled=${enabled}`, { method: 'POST' });
+      fetchStats();
+    }
+
+    async function toggleFastThinking(enabled) {
+      await fetch(`/api/config/fast-thinking?enabled=${enabled}`, { method: 'POST' });
+      fetchStats();
+    }
+
+    async function changeEffort(val) {
+      await fetch(`/api/config/effort?effort=${val}`, { method: 'POST' });
+      fetchStats();
+    }
+
+    async function saveUpstreamUrl() {
+      const url = document.getElementById('upstream-input').value.trim();
+      if (!url) return;
+      await fetch(`/api/config/upstream?url=${encodeURIComponent(url)}`, { method: 'POST' });
+      alert('上游 API 網址已成功更新！');
+      fetchStats();
+    }
+
+    async function toggleFreebuff(enabled) {
+      await fetch(`/api/config/freebuff?enabled=${enabled}`, { method: 'POST' });
+      fetchStats();
+    }
+
+    async function saveFreebuffUrl() {
+      const url = document.getElementById('freebuff-url-input').value.trim();
+      if (!url) return;
+      await fetch(`/api/config/freebuff-url?url=${encodeURIComponent(url)}`, { method: 'POST' });
+      fetchStats();
+    }
+
+    async function sendSingleTestRequest() {
+      const output = document.getElementById('tester-output');
+      output.textContent = '正在發送測試請求至 TokenRouter /v1/models...';
+      try {
+        const start = performance.now();
+        const res = await fetch('/v1/models');
+        const duration = Math.round(performance.now() - start);
+        const text = await res.text();
+        output.textContent = `[${res.status} OK] 耗時 ${duration}ms\nResponse:\n` + text.substring(0, 500);
+        fetchStats();
+        fetchLogs();
+      } catch (err) {
+        output.textContent = '請求失敗: ' + err.message;
+      }
+    }
+
+    async function sendBurstTestRequests(count) {
+      const output = document.getElementById('tester-output');
+      output.textContent = `正在同時觸發 ${count} 次併發爆發請求，觀察滑動窗口與隊列配平...`;
+      const promises = [];
+      for (let i = 0; i < count; i++) {
+        promises.push(fetch('/v1/models'));
+      }
+      const results = await Promise.allSettled(promises);
+      let successCount = 0;
+      results.forEach(r => { if (r.status === 'fulfilled' && r.value.ok) successCount++; });
+      output.textContent = `爆發測試完成！成功完成: ${successCount} / ${count} 次請求。\n觀察上方金鑰圖表與排隊指標！`;
+      fetchStats();
+      fetchLogs();
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value) || 0;
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+    }
+
+    // Auto poll every 1.5 seconds
+    setInterval(() => {
+      fetchStats();
+      fetchLogs();
+    }, 1500);
+
+    fetchStats();
+    fetchLogs();
+  </script>
+</body>
+</html>
