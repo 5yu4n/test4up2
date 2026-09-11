@@ -691,6 +691,15 @@ func NewProxyHandler(pool *Pool) *ProxyHandler {
 	if pool != nil {
 		usagePath = pool.configPath + ".usage.json"
 	}
+	usageHistory := loadedLogs
+	if pool != nil && pool.configPath != "" {
+		// The dashboard keeps only the newest 100 rows in memory, while the
+		// durable JSONL store retains up to 2,000. Migrate the larger history so
+		// a first telemetry startup does not silently omit older usage records.
+		if history, err := loadRecentRequestLogs(pool.configPath+".requests.jsonl", requestLogKeepRecords); err == nil && len(history) > len(usageHistory) {
+			usageHistory = history
+		}
+	}
 	backfillRequestLogUsage(loadedLogs)
 	return &ProxyHandler{
 		pool: pool,
@@ -701,7 +710,7 @@ func NewProxyHandler(pool *Pool) *ProxyHandler {
 		logs:    loadedLogs,
 		maxLogs: 100,
 		logSink: logSink,
-		usage:   newTokenUsageStore(usagePath, loadedLogs),
+		usage:   newTokenUsageStore(usagePath, usageHistory),
 	}
 }
 
