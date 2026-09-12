@@ -1323,10 +1323,18 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if isRetryableStatus && statusCode >= 502 {
 				compactLargeContext(fmt.Sprintf("upstream status %d", statusCode))
 			}
-			if isRetryableStatus && !useFreebuff && attempt < maxAttempts &&
-				time.Since(startTime) < maxRequestRetryWindow {
+			if isRetryableStatus {
 				lastErr = fmt.Errorf("upstream returned status %d", statusCode)
-				continue
+				if !useFreebuff && attempt < maxAttempts &&
+					time.Since(startTime) < maxRequestRetryWindow {
+					continue
+				}
+				// Do not emit api_error for an exhausted retryable upstream
+				// response. For a streaming request the HTTP status is already
+				// committed as 200, so the common failure path below sends an
+				// explicit rate_limit_error event that ZCode can retry instead of
+				// classifying the turn as a non-retryable business error.
+				break
 			}
 			if liveStream != nil {
 				_ = liveStream.WriteError("api_error", fmt.Sprintf("upstream returned status %d", statusCode))

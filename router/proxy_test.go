@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -561,6 +562,45 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestProxyExhaustedStreaming5xxUsesRetryableError(t *testing.T) {
+	ph := NewProxyHandler(testPool(t, "https://api.tokenrouter.com/v1", "", false))
+	for i := 2; i <= 4; i++ {
+		id := fmt.Sprintf("k%d", i)
+		ph.pool.keys[id] = &KeyItem{Config: KeyConfig{ID: id, Name: id, Key: "test-key-" + id, RPMLimit: 10, Enabled: true}, Timestamps: make([]time.Time, 0)}
+		ph.pool.keyOrder = append(ph.pool.keyOrder, id)
+	}
+
+	var calls int
+	ph.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Status:     "503 Service Unavailable",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"worker unavailable"}`)),
+			Request:    req,
+		}, nil
+	})
+	body := `{"model":"claude-3-5-sonnet","stream":true,"messages":[{"role":"user","content":"` + strings.Repeat("context ", 110000) + `"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	ph.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want committed SSE 200", rec.Code)
+	}
+	if calls != 4 {
+		t.Fatalf("upstream calls = %d, want one attempt per key", calls)
+	}
+	response := rec.Body.String()
+	if !strings.Contains(response, "rate_limit_error") || !strings.Contains(response, "upstream returned status 503") {
+		t.Fatalf("response = %q, want explicit retryable 503 error", response)
+	}
+	if strings.Contains(response, `"type":"api_error"`) {
+		t.Fatalf("response = %q, must not classify exhausted 5xx as api_error", response)
+	}
 }
 
 func TestProxyAnthropicBridgeNormalizesUpstreamRequest(t *testing.T) {
