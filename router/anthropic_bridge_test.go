@@ -34,6 +34,34 @@ func TestAnthropicRequestToOpenAI(t *testing.T) {
 	}
 }
 
+func TestAnthropicRequestToOpenAIPreservesNestedEffort(t *testing.T) {
+	body, err := anthropicRequestToOpenAI([]byte(`{"model":"z-ai/glm-5.3-free","max_tokens":8,"output_config":{"effort":"low"},"messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["reasoning_effort"] != "low" {
+		t.Fatalf("reasoning_effort = %#v, want low", got["reasoning_effort"])
+	}
+}
+
+func TestAnthropicRequestToOpenAITopLevelEffortWins(t *testing.T) {
+	body, err := anthropicRequestToOpenAI([]byte(`{"model":"z-ai/glm-5.3-free","reasoning_effort":"high","output_config":{"effort":"low"},"messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %#v, want high", got["reasoning_effort"])
+	}
+}
+
 func TestAnthropicToolNamesUseStableOpenAIAliases(t *testing.T) {
 	longName := "mcp__plugin_android-emulator_android-emulator__android_discover_project"
 	body := `{"model":"z-ai/glm-5.3-free","max_tokens":4,"stream":true,"tools":[{"name":"` + longName + `","description":"discover","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"` + longName + `"},"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"` + longName + `","input":{"path":"."}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"ok"}]}]}`

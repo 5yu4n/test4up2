@@ -433,6 +433,20 @@ func anthropicRequestToOpenAIWithAliases(body []byte) ([]byte, *toolNameAliases,
 			out[key] = value
 		}
 	}
+	// Anthropic clients commonly put adaptive-thinking effort in the nested
+	// output_config object. The OpenAI-compatible TokenRouter endpoint expects
+	// the equivalent top-level reasoning_effort field. requestedEffort in the
+	// proxy already recognises this shape, so dropping it here would silently
+	// turn an explicit low/high/max choice into the provider's default (often
+	// the slowest reasoning path). Preserve an explicit top-level value when a
+	// client sends both forms.
+	if _, hasTopLevelEffort := out["reasoning_effort"]; !hasTopLevelEffort {
+		if outputConfig, ok := in["output_config"].(map[string]interface{}); ok {
+			if effort, ok := outputConfig["effort"].(string); ok && strings.TrimSpace(effort) != "" {
+				out["reasoning_effort"] = effort
+			}
+		}
+	}
 	if tools, ok := in["tools"]; ok {
 		out["tools"] = anthropicToolsToOpenAIWithAliases(tools, aliases)
 	}
