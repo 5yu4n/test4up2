@@ -751,6 +751,9 @@ func (ph *ProxyHandler) GetTokenUsage() TokenUsageStats {
 
 func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+	if ph.serveAllowedModelCatalog(w, r) {
+		return
+	}
 
 	// Read body into buffer to allow pass-through and potential retry on 429
 	var bodyBytes []byte
@@ -810,6 +813,18 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestModel := requestedModel(bodyBytes)
 	requestEffort := requestedEffort(bodyBytes)
 	streamRequested := requestedStream(bodyBytes)
+	if requestModel != "" && !ph.pool.IsModelAllowed(requestModel) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, `{"error":{"message":"model %q is not enabled on this router","type":"invalid_request_error"}}`, requestModel)
+		return
+	}
+	if requestModel == "" && requestRequiresModel(r) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"model is required","type":"invalid_request_error"}}`))
+		return
+	}
 	requestFingerprintValue := requestFingerprint(bodyBytes)
 	useFreebuff := ph.pool.IsFreebuffEnabled() && isFreebuffFlashModel(requestModel)
 	upstreamStr := strings.TrimSuffix(ph.pool.GetUpstreamURL(), "/")
@@ -1755,6 +1770,46 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(failureStatus)
 		_, _ = w.Write([]byte(fmt.Sprintf(`{"error":{"message":"upstream request failed: %s","type":"rate_limit_error","retry_after":%q}}`, errStr, retryAfterHint)))
 	}
+}
+
+func requestRequiresModel(r *http.Request) bool {
+	if r == nil || r.Method != http.MethodPost {
+		return false
+	}
+	switch strings.TrimSuffix(r.URL.Path, "/") {
+	case "/v1/chat/completions", "/chat/completions", "/v1/messages", "/messages", "/v1/embeddings", "/embeddings":
+		return true
+	default:
+		return false
+	}
+}
+
+func (ph *ProxyHandler) serveAllowedModelCatalog(w http.ResponseWriter, r *http.Request) bool {
+	if r == nil || r.Method != http.MethodGet || ph == nil || ph.pool == nil {
+		return false
+	}
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	if path != "/v1/models" && path != "/models" {
+		return false
+	}
+	models := ph.pool.GetAllowedModels()
+	if len(models) == 0 {
+		return false
+	}
+	data := make([]map[string]string, 0, len(models))
+	for _, model := range models {
+		data = append(data, map[string]string{
+			"id":       model,
+			"object":   "model",
+			"owned_by": "configured-allowlist",
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"object": "list",
+		"data":   data,
+	})
+	return true
 }
 
 func parseRetryAfter(value string) time.Duration {

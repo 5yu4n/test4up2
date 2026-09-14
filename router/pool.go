@@ -2,10 +2,14 @@ package router
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +35,9 @@ type Config struct {
 	DefaultEffort            string            `json:"default_effort"`
 	SSEPingIntervalMs        int               `json:"sse_ping_interval_ms"`
 	ModelMappings            map[string]string `json:"model_mappings"`
+	AllowedModels            []string          `json:"allowed_models"`
+	DashboardPasswordSalt    string            `json:"dashboard_password_salt,omitempty"`
+	DashboardPasswordHash    string            `json:"dashboard_password_hash,omitempty"`
 	Keys                     []KeyConfig       `json:"keys"`
 }
 
@@ -139,6 +146,7 @@ type PoolStats struct {
 	DefaultEffort            string            `json:"default_effort"`
 	SSEPingIntervalMs        int               `json:"sse_ping_interval_ms"`
 	ModelMappings            map[string]string `json:"model_mappings"`
+	AllowedModels            []string          `json:"allowed_models"`
 	TokenUsage               TokenUsageStats   `json:"token_usage"`
 	Keys                     []KeyStatusDTO    `json:"keys"`
 }
@@ -161,6 +169,9 @@ type Pool struct {
 	defaultEffort            string
 	ssePingIntervalMs        int
 	modelMappings            map[string]string
+	allowedModels            map[string]struct{}
+	dashboardPasswordSalt    string
+	dashboardPasswordHash    string
 	keys                     map[string]*KeyItem
 	keyOrder                 []string
 	queuedCount              int
@@ -242,6 +253,15 @@ func (p *Pool) LoadConfig() error {
 	if p.modelMappings == nil {
 		p.modelMappings = make(map[string]string)
 	}
+	p.allowedModels = make(map[string]struct{}, len(cfg.AllowedModels))
+	for _, model := range cfg.AllowedModels {
+		model = strings.TrimSpace(model)
+		if model != "" {
+			p.allowedModels[model] = struct{}{}
+		}
+	}
+	p.dashboardPasswordSalt = strings.TrimSpace(cfg.DashboardPasswordSalt)
+	p.dashboardPasswordHash = strings.TrimSpace(cfg.DashboardPasswordHash)
 
 	p.keyOrder = make([]string, 0, len(cfg.Keys))
 	for _, kcfg := range cfg.Keys {
@@ -328,8 +348,15 @@ func (p *Pool) SaveConfig() error {
 		DefaultEffort:            p.defaultEffort,
 		SSEPingIntervalMs:        p.ssePingIntervalMs,
 		ModelMappings:            p.modelMappings,
+		AllowedModels:            make([]string, 0, len(p.allowedModels)),
+		DashboardPasswordSalt:    p.dashboardPasswordSalt,
+		DashboardPasswordHash:    p.dashboardPasswordHash,
 		Keys:                     make([]KeyConfig, 0, len(p.keyOrder)),
 	}
+	for model := range p.allowedModels {
+		cfg.AllowedModels = append(cfg.AllowedModels, model)
+	}
+	sort.Strings(cfg.AllowedModels)
 	for _, id := range p.keyOrder {
 		if k, ok := p.keys[id]; ok {
 			cfg.Keys = append(cfg.Keys, k.Config)
@@ -342,7 +369,27 @@ func (p *Pool) SaveConfig() error {
 		return err
 	}
 
-	return os.WriteFile(p.configPath, data, 0644)
+	return os.WriteFile(p.configPath, data, 0600)
+}
+
+// VerifyDashboardPassword checks the configured dashboard password without
+// exposing the password or its digest to callers. The password is generated
+// with high entropy during deployment; the salted SHA-256 digest is sufficient
+// here because the password is not user-chosen.
+func (p *Pool) VerifyDashboardPassword(password string) bool {
+	p.mu.RLock()
+	salt := p.dashboardPasswordSalt
+	expectedHex := p.dashboardPasswordHash
+	p.mu.RUnlock()
+	if salt == "" || expectedHex == "" {
+		return false
+	}
+	expected, err := hex.DecodeString(expectedHex)
+	if err != nil || len(expected) != sha256.Size {
+		return false
+	}
+	actual := sha256.Sum256([]byte(salt + "\x00" + password))
+	return subtle.ConstantTimeCompare(actual[:], expected) == 1
 }
 
 func (p *Pool) backgroundCleaner() {
@@ -824,6 +871,7 @@ func (p *Pool) GetStats() PoolStats {
 		DefaultEffort:            p.defaultEffort,
 		SSEPingIntervalMs:        p.ssePingIntervalMs,
 		ModelMappings:            modelMappings,
+		AllowedModels:            p.getAllowedModelsLocked(),
 		Keys:                     make([]KeyStatusDTO, 0, len(p.keyOrder)),
 	}
 	if p.concurrencyBackoffUntil.After(now) {
@@ -1078,6 +1126,34 @@ func (p *Pool) GetPort() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.port
+}
+
+// GetAllowedModels returns the configured model allowlist. An empty list means
+// backwards-compatible unrestricted routing.
+func (p *Pool) GetAllowedModels() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.getAllowedModelsLocked()
+}
+
+func (p *Pool) getAllowedModelsLocked() []string {
+	models := make([]string, 0, len(p.allowedModels))
+	for model := range p.allowedModels {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	return models
+}
+
+func (p *Pool) IsModelAllowed(model string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if len(p.allowedModels) == 0 {
+		return true
+	}
+	_, ok := p.allowedModels[strings.TrimSpace(model)]
+	return ok
 }
 
 func (p *Pool) ResolveModelAlias(requestedModel string) string {

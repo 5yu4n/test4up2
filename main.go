@@ -29,6 +29,15 @@ func main() {
 	proxyHandler := router.NewProxyHandler(pool)
 
 	mux := http.NewServeMux()
+	dashboardAuth := newDashboardAuth()
+	requireDashboardMutation := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return false
+		}
+		return dashboardAuth.require(w, r)
+	}
 
 	// Web Dashboard Static UI
 	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +72,54 @@ func main() {
 		http.NotFound(w, r)
 	})
 
+	// Dashboard authentication. Read-only statistics and logs remain visible;
+	// every endpoint that can change routing state requires this session.
+	mux.HandleFunc("/api/dashboard/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		password, err := decodeDashboardPassword(r)
+		if err != nil || !pool.VerifyDashboardPassword(password) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid dashboard password"}`))
+			return
+		}
+		if err := dashboardAuth.issueSession(w, r); err != nil {
+			http.Error(w, "could not create dashboard session", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(`{"authenticated":true}`))
+	})
+
+	mux.HandleFunc("/api/dashboard/session", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = fmt.Fprintf(w, `{"authenticated":%t}`, dashboardAuth.authenticated(r))
+	})
+
+	mux.HandleFunc("/api/dashboard/logout", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		dashboardAuth.clearSession(w, r)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(`{"authenticated":false}`))
+	})
+
 	// Dashboard Management APIs
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -78,6 +135,9 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/keys/toggle", func(w http.ResponseWriter, r *http.Request) {
+		if !requireDashboardMutation(w, r) {
+			return
+		}
 		keyID := r.URL.Query().Get("id")
 		enabled := r.URL.Query().Get("enabled") == "true"
 		if keyID == "" {
@@ -90,6 +150,9 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/config/upstream", func(w http.ResponseWriter, r *http.Request) {
+		if !requireDashboardMutation(w, r) {
+			return
+		}
 		urlStr := r.URL.Query().Get("url")
 		if urlStr == "" {
 			http.Error(w, `{"error":"missing url"}`, http.StatusBadRequest)
@@ -101,6 +164,9 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/config/freebuff", func(w http.ResponseWriter, r *http.Request) {
+		if !requireDashboardMutation(w, r) {
+			return
+		}
 		enabled := r.URL.Query().Get("enabled") == "true"
 		if err := pool.SetFreebuffEnabled(enabled); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
@@ -111,6 +177,9 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/config/freebuff-url", func(w http.ResponseWriter, r *http.Request) {
+		if !requireDashboardMutation(w, r) {
+			return
+		}
 		urlStr := r.URL.Query().Get("url")
 		if urlStr == "" {
 			http.Error(w, `{"error":"missing url"}`, http.StatusBadRequest)
@@ -125,6 +194,9 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/config/strip-thinking", func(w http.ResponseWriter, r *http.Request) {
+		if !requireDashboardMutation(w, r) {
+			return
+		}
 		enabled := r.URL.Query().Get("enabled") == "true"
 		_ = pool.SetStripThinking(enabled)
 		w.Header().Set("Content-Type", "application/json")
@@ -132,6 +204,9 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/config/fast-thinking", func(w http.ResponseWriter, r *http.Request) {
+		if !requireDashboardMutation(w, r) {
+			return
+		}
 		enabled := r.URL.Query().Get("enabled") == "true"
 		_ = pool.SetFastStreamThinkingAsText(enabled)
 		w.Header().Set("Content-Type", "application/json")
@@ -139,6 +214,9 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/config/effort", func(w http.ResponseWriter, r *http.Request) {
+		if !requireDashboardMutation(w, r) {
+			return
+		}
 		effort := r.URL.Query().Get("effort")
 		// "caller" disables the router-side default so every request keeps
 		// exactly the effort behavior its own client asked for.
@@ -151,6 +229,9 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/config/model-mapping", func(w http.ResponseWriter, r *http.Request) {
+		if !requireDashboardMutation(w, r) {
+			return
+		}
 		alias := r.URL.Query().Get("alias")
 		target := r.URL.Query().Get("target")
 		if alias == "" {

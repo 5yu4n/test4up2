@@ -171,6 +171,11 @@
       box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
     }
 
+    .config-input:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
     .btn {
       background: rgba(255, 255, 255, 0.05);
       border: 1px solid var(--border-color);
@@ -596,13 +601,24 @@
       </div>
     </header>
 
+    <div class="config-card" style="background: rgba(245, 158, 11, 0.08); border-color: rgba(245, 158, 11, 0.35);">
+      <div style="flex:1;">
+        <div style="font-weight:700; font-size:15px; color:var(--accent-amber); margin-bottom:5px;">🔒 Dashboard 管理鎖</div>
+        <div style="font-size:12px; color:var(--text-secondary);">未解鎖時可查看狀態與日誌；所有設定、金鑰開關與測試操作都會被伺服器拒絕。</div>
+      </div>
+      <input type="password" id="dashboard-password" class="config-input" style="max-width:300px;" autocomplete="current-password" placeholder="管理密碼">
+      <button class="btn btn-primary" id="dashboard-unlock" onclick="unlockDashboard()">解鎖設定</button>
+      <button class="btn" id="dashboard-lock" onclick="lockDashboard()" hidden>重新鎖定</button>
+      <span id="dashboard-auth-status" style="font-size:12px; color:var(--accent-amber); white-space:nowrap;">目前已鎖定</span>
+    </div>
+
     <!-- Upstream Config -->
     <div class="config-card">
       <div class="config-input-group">
         <span class="config-label">上游 API 網址 (Upstream Base URL):</span>
-        <input type="text" id="upstream-input" class="config-input" placeholder="https://api.tokenrouter.com/v1">
+        <input type="text" id="upstream-input" class="config-input" data-admin-control disabled placeholder="https://api.tokenrouter.com/v1">
       </div>
-      <button class="btn btn-primary" onclick="saveUpstreamUrl()">儲存網址</button>
+      <button class="btn btn-primary" data-admin-control disabled onclick="saveUpstreamUrl()">儲存網址</button>
     </div>
 
     <div class="config-card" style="background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.3);">
@@ -611,11 +627,11 @@
         <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px;">啟用後，模型名稱含 <code>glm-5.3-flash</code> 的請求會直接送到本機 Freebuff2API；其他模型照常走上游。Freebuff 使用獨立通道，不佔 TokenRouter Key 與併發槽。</div>
         <div style="display:flex; align-items:center; gap:10px;">
           <span style="font-size:13px; color:var(--text-primary); font-weight:500;">Freebuff 本機網址:</span>
-          <input type="text" id="freebuff-url-input" class="config-input" style="max-width:420px;" placeholder="http://127.0.0.1:8090/v1">
-          <button class="btn" onclick="saveFreebuffUrl()">儲存</button>
+          <input type="text" id="freebuff-url-input" class="config-input" data-admin-control disabled style="max-width:420px;" placeholder="http://127.0.0.1:8090/v1">
+          <button class="btn" data-admin-control disabled onclick="saveFreebuffUrl()">儲存</button>
           <span style="font-size:13px; color:var(--text-primary); font-weight:500;">啟用分流</span>
           <label class="switch">
-            <input type="checkbox" id="freebuff-toggle" onchange="toggleFreebuff(this.checked)">
+            <input type="checkbox" id="freebuff-toggle" data-admin-control disabled onchange="toggleFreebuff(this.checked)">
             <span class="slider"></span>
           </label>
         </div>
@@ -778,14 +794,99 @@
         <span>🧪 配平器極致順暢測試工具 (Test Endpoint)</span>
       </div>
       <div class="tester-controls">
-        <button class="btn btn-primary" onclick="sendSingleTestRequest()">發送 1 次測試請求</button>
-        <button class="btn" onclick="sendBurstTestRequests(7)">發送 7 次輕量併發檢查</button>
+        <button class="btn btn-primary" data-admin-control disabled onclick="sendSingleTestRequest()">發送 1 次測試請求</button>
+        <button class="btn" data-admin-control disabled onclick="sendBurstTestRequests(7)">發送 7 次輕量併發檢查</button>
       </div>
       <div class="tester-response" id="tester-output">// /v1/models 只檢查基本轉發；請以長串流負載驗收 7 路滿載。</div>
     </div>
   </div>
 
   <script>
+    let dashboardUnlocked = false;
+
+    function setAdminUnlocked(unlocked) {
+      dashboardUnlocked = !!unlocked;
+      document.querySelectorAll('[data-admin-control]').forEach(control => {
+        control.disabled = !dashboardUnlocked;
+      });
+      document.querySelectorAll('#keys-container input[type="checkbox"]').forEach(control => {
+        control.disabled = !dashboardUnlocked;
+      });
+
+      const passwordInput = document.getElementById('dashboard-password');
+      const unlockButton = document.getElementById('dashboard-unlock');
+      const lockButton = document.getElementById('dashboard-lock');
+      const status = document.getElementById('dashboard-auth-status');
+      if (passwordInput) passwordInput.value = '';
+      if (unlockButton) unlockButton.hidden = dashboardUnlocked;
+      if (lockButton) lockButton.hidden = !dashboardUnlocked;
+      if (status) {
+        status.textContent = dashboardUnlocked ? '已解鎖：目前瀏覽器工作階段可操作設定' : '目前已鎖定：設定僅可查看';
+        status.style.color = dashboardUnlocked ? 'var(--accent-emerald)' : 'var(--text-muted)';
+      }
+    }
+
+    async function checkDashboardSession() {
+      try {
+        const res = await fetch('/api/dashboard/session', { credentials: 'same-origin' });
+        const data = await res.json();
+        setAdminUnlocked(!!data.authenticated);
+      } catch (err) {
+        setAdminUnlocked(false);
+      }
+    }
+
+    async function unlockDashboard() {
+      const passwordInput = document.getElementById('dashboard-password');
+      const status = document.getElementById('dashboard-auth-status');
+      const password = passwordInput.value;
+      if (!password) {
+        status.textContent = '請輸入管理密碼';
+        status.style.color = 'var(--accent-amber)';
+        return;
+      }
+      try {
+        const res = await fetch('/api/dashboard/login', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+        if (!res.ok) {
+          setAdminUnlocked(false);
+          status.textContent = '密碼錯誤或服務尚未完成初始化';
+          status.style.color = 'var(--accent-rose)';
+          return;
+        }
+        setAdminUnlocked(true);
+        fetchStats();
+      } catch (err) {
+        setAdminUnlocked(false);
+        status.textContent = '解鎖失敗：' + err.message;
+        status.style.color = 'var(--accent-rose)';
+      }
+    }
+
+    async function lockDashboard() {
+      try {
+        await fetch('/api/dashboard/logout', { method: 'POST', credentials: 'same-origin' });
+      } finally {
+        setAdminUnlocked(false);
+      }
+    }
+
+    async function adminFetch(url, options = {}) {
+      if (!dashboardUnlocked) {
+        throw new Error('dashboard locked');
+      }
+      const res = await fetch(url, { credentials: 'same-origin', ...options });
+      if (res.status === 401) {
+        setAdminUnlocked(false);
+        throw new Error('dashboard locked');
+      }
+      return res;
+    }
+
     async function fetchStats() {
       try {
         const res = await fetch('/api/stats');
@@ -969,7 +1070,7 @@
           <div class="key-actions">
             <span style="font-size:12px; color:var(--text-secondary);">啟用金鑰</span>
             <label class="switch">
-              <input type="checkbox" ${k.enabled ? 'checked' : ''} onchange="toggleKey('${k.id}', this.checked)">
+              <input type="checkbox" ${k.enabled ? 'checked' : ''} ${dashboardUnlocked ? '' : 'disabled'} onchange="toggleKey('${k.id}', this.checked)">
               <span class="slider"></span>
             </label>
           </div>
@@ -1022,47 +1123,51 @@
     }
 
     async function toggleKey(keyId, enabled) {
-      await fetch(`/api/keys/toggle?id=${keyId}&enabled=${enabled}`, { method: 'POST' });
+      await adminFetch(`/api/keys/toggle?id=${keyId}&enabled=${enabled}`, { method: 'POST' });
       fetchStats();
     }
 
     async function toggleStripThinking(enabled) {
-      await fetch(`/api/config/strip-thinking?enabled=${enabled}`, { method: 'POST' });
+      await adminFetch(`/api/config/strip-thinking?enabled=${enabled}`, { method: 'POST' });
       fetchStats();
     }
 
     async function toggleFastThinking(enabled) {
-      await fetch(`/api/config/fast-thinking?enabled=${enabled}`, { method: 'POST' });
+      await adminFetch(`/api/config/fast-thinking?enabled=${enabled}`, { method: 'POST' });
       fetchStats();
     }
 
     async function changeEffort(val) {
-      await fetch(`/api/config/effort?effort=${val}`, { method: 'POST' });
+      await adminFetch(`/api/config/effort?effort=${val}`, { method: 'POST' });
       fetchStats();
     }
 
     async function saveUpstreamUrl() {
       const url = document.getElementById('upstream-input').value.trim();
       if (!url) return;
-      await fetch(`/api/config/upstream?url=${encodeURIComponent(url)}`, { method: 'POST' });
+      await adminFetch(`/api/config/upstream?url=${encodeURIComponent(url)}`, { method: 'POST' });
       alert('上游 API 網址已成功更新！');
       fetchStats();
     }
 
     async function toggleFreebuff(enabled) {
-      await fetch(`/api/config/freebuff?enabled=${enabled}`, { method: 'POST' });
+      await adminFetch(`/api/config/freebuff?enabled=${enabled}`, { method: 'POST' });
       fetchStats();
     }
 
     async function saveFreebuffUrl() {
       const url = document.getElementById('freebuff-url-input').value.trim();
       if (!url) return;
-      await fetch(`/api/config/freebuff-url?url=${encodeURIComponent(url)}`, { method: 'POST' });
+      await adminFetch(`/api/config/freebuff-url?url=${encodeURIComponent(url)}`, { method: 'POST' });
       fetchStats();
     }
 
     async function sendSingleTestRequest() {
       const output = document.getElementById('tester-output');
+      if (!dashboardUnlocked) {
+        output.textContent = '請先解鎖 Dashboard 管理設定，再執行測試。';
+        return;
+      }
       output.textContent = '正在發送測試請求至 TokenRouter /v1/models...';
       try {
         const start = performance.now();
@@ -1079,6 +1184,10 @@
 
     async function sendBurstTestRequests(count) {
       const output = document.getElementById('tester-output');
+      if (!dashboardUnlocked) {
+        output.textContent = '請先解鎖 Dashboard 管理設定，再執行測試。';
+        return;
+      }
       output.textContent = `正在同時觸發 ${count} 次併發爆發請求，觀察滑動窗口與隊列配平...`;
       const promises = [];
       for (let i = 0; i < count; i++) {
@@ -1110,6 +1219,8 @@
       fetchLogs();
     }, 1500);
 
+    setAdminUnlocked(false);
+    checkDashboardSession();
     fetchStats();
     fetchLogs();
   </script>
