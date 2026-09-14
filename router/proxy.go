@@ -1443,7 +1443,33 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// TokenRouter's native endpoint is OpenAI SSE. Convert each delta
 				// into Anthropic events so Claude clients keep their original wire
 				// contract while using the faster, documented upstream path.
-				anthropicConverter = newAnthropicStreamConverterWithAliases(writeChunk, requestModel, fmt.Sprintf("msg_proxy_%d", startTime.UnixNano()), toolAliases)
+				// Hold the converter's initial lifecycle events until the first
+				// visible token arrives. Some free-tier workers return a well-formed
+				// [DONE] stream with no content at all; forwarding its
+				// message_start/message_stop pair would commit an empty success and
+				// prevent a safe retry on another key (ZCode reports this as a
+				// compaction failure).
+				pendingAnthropicChunks := make([][]byte, 0, 4)
+				flushPendingAnthropic := func() error {
+					for _, pending := range pendingAnthropicChunks {
+						if err := writeChunk(pending); err != nil {
+							return err
+						}
+					}
+					pendingAnthropicChunks = pendingAnthropicChunks[:0]
+					return nil
+				}
+				bufferUntilAnthropicOutput := func(chunk []byte) error {
+					if anthropicConverter == nil || !anthropicConverter.hasVisibleOutput() {
+						pendingAnthropicChunks = append(pendingAnthropicChunks, append([]byte(nil), chunk...))
+						return nil
+					}
+					if err := flushPendingAnthropic(); err != nil {
+						return err
+					}
+					return writeChunk(chunk)
+				}
+				anthropicConverter = newAnthropicStreamConverterWithAliases(bufferUntilAnthropicOutput, requestModel, fmt.Sprintf("msg_proxy_%d", startTime.UnixNano()), toolAliases)
 				reader := bufio.NewReaderSize(resp.Body, 16*1024)
 				for {
 					line, rErr := reader.ReadBytes('\n')
@@ -1457,6 +1483,12 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						if writeErr := anthropicConverter.consumeData(data); writeErr != nil {
 							streamErrorMsg = writeErr.Error()
 							break
+						}
+						if anthropicConverter.hasVisibleOutput() {
+							if writeErr := flushPendingAnthropic(); writeErr != nil {
+								streamErrorMsg = writeErr.Error()
+								break
+							}
 						}
 					}
 					if rErr != nil {
@@ -1477,6 +1509,17 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					if finishErr := anthropicConverter.finish(); finishErr != nil && streamErrorMsg == "" {
 						streamErrorMsg = finishErr.Error()
 					}
+				}
+				if streamErrorMsg == "" && anthropicConverter.hasVisibleOutput() {
+					if writeErr := flushPendingAnthropic(); writeErr != nil {
+						streamErrorMsg = writeErr.Error()
+					}
+				} else if streamErrorMsg == "" && anthropicConverter.done && !anthropicConverter.hasVisibleOutput() {
+					// A clean transport-level end is not a useful completion when
+					// the translated Anthropic stream contains no output. Keep the
+					// downstream SSE uncommitted so the retry path can rotate keys.
+					pendingAnthropicChunks = pendingAnthropicChunks[:0]
+					streamErrorMsg = "upstream stream completed without visible output"
 				}
 				streamUsage = anthropicConverter.usage()
 			} else if streamErrorMsg == "" {

@@ -570,6 +570,11 @@ type anthropicStreamConverter struct {
 	stopReason string
 	started    bool
 	done       bool
+	// visibleOutput is set once the upstream has supplied reasoning, text, or
+	// a tool call. A provider can legally close an OpenAI SSE stream with only
+	// finish metadata; that is an empty completion for an Anthropic client and
+	// must not be presented as a successful compact summary.
+	visibleOutput bool
 	// liveToolIndex is the OpenAI tool_call index that streams live as an
 	// Anthropic block (the first call seen). Parallel calls with different
 	// indexes are buffered and emitted sequentially at finish.
@@ -674,6 +679,7 @@ func (c *anthropicStreamConverter) consumeData(data []byte) error {
 		reasoning, _ = choice.Delta["reasoning"].(string)
 	}
 	if reasoning != "" {
+		c.visibleOutput = true
 		if c.blockType != "thinking" {
 			if err := c.startBlock("thinking", 0); err != nil {
 				return err
@@ -685,6 +691,7 @@ func (c *anthropicStreamConverter) consumeData(data []byte) error {
 	}
 	content, _ := choice.Delta["content"].(string)
 	if content != "" {
+		c.visibleOutput = true
 		index := 0
 		if c.blockType == "thinking" {
 			index = 1
@@ -699,6 +706,7 @@ func (c *anthropicStreamConverter) consumeData(data []byte) error {
 		}
 	}
 	if rawCalls, ok := choice.Delta["tool_calls"].([]interface{}); ok && len(rawCalls) > 0 {
+		c.visibleOutput = true
 		for _, rawCall := range rawCalls {
 			call, ok := rawCall.(map[string]interface{})
 			if !ok {
@@ -760,6 +768,10 @@ func (c *anthropicStreamConverter) consumeData(data []byte) error {
 		c.stopReason = "tool_calls"
 	}
 	return nil
+}
+
+func (c *anthropicStreamConverter) hasVisibleOutput() bool {
+	return c != nil && c.visibleOutput
 }
 
 func (c *anthropicStreamConverter) finish() error {

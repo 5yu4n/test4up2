@@ -724,6 +724,45 @@ func TestProxyRetriesEmptyAnthropicStreamBeforeVisibleOutput(t *testing.T) {
 	}
 }
 
+func TestProxyRetriesTerminatedEmptyAnthropicStream(t *testing.T) {
+	ph := NewProxyHandler(testPool(t, "https://api.tokenrouter.com/v1", "", false))
+	ph.pool.keys["k2"] = &KeyItem{Config: KeyConfig{ID: "k2", Name: "K2", Key: "test-key-2", RPMLimit: 10, Enabled: true}, Timestamps: make([]time.Time, 0)}
+	ph.pool.keyOrder = append(ph.pool.keyOrder, "k2")
+	var calls int
+	ph.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		body := "data: {\"id\":\"empty\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+		if calls == 2 {
+			body = "data: {\"id\":\"ok\",\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n"
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"glm-5.3-free","stream":true,"messages":[]}`))
+	rec := httptest.NewRecorder()
+	ph.ServeHTTP(rec, req)
+
+	if calls != 2 || rec.Code != http.StatusOK {
+		t.Fatalf("calls=%d status=%d, want one retry after empty [DONE]", calls, rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Count(body, "event: message_start") != 1 || !strings.Contains(body, `"text":"OK"`) || !strings.Contains(body, "event: message_stop") {
+		t.Fatalf("retried stream was incomplete or duplicated: %q", body)
+	}
+	if strings.Contains(body, "without visible output") {
+		t.Fatalf("empty first attempt leaked into client stream: %q", body)
+	}
+	logs := ph.GetLogs()
+	if len(logs) != 1 || logs[0].StatusCode != http.StatusOK || logs[0].Attempts != 2 {
+		t.Fatalf("retry log = %#v, want one successful two-attempt record", logs)
+	}
+}
+
 func TestProxyRetryUsesFreshRequestContext(t *testing.T) {
 	ph := NewProxyHandler(testPool(t, "https://api.tokenrouter.com/v1", "", false))
 	ph.pool.keys["k2"] = &KeyItem{Config: KeyConfig{ID: "k2", Name: "K2", Key: "test-key-2", RPMLimit: 1, Enabled: true}, Timestamps: make([]time.Time, 0)}
